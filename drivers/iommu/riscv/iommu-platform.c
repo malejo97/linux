@@ -21,6 +21,7 @@ static int riscv_iommu_platform_probe(struct platform_device *pdev)
 	struct riscv_iommu_device *iommu = NULL;
 	struct resource *res = NULL;
 	u32 fctl = 0;
+	u64 icvec = 0;
 	int irq = 0;
 	int ret = 0;
 
@@ -82,7 +83,7 @@ static int riscv_iommu_platform_probe(struct platform_device *pdev)
 	}
 
 	if (iommu->cap & RISCV_IOMMU_CAP_HPM) {
-		irq = platform_get_irq_byname_optional(pdev, "pm");
+		irq = platform_get_irq_byname_optional(pdev, "hpm");
 		if (irq > 0)
 			iommu->irq_pm = irq;
 		else {
@@ -105,6 +106,18 @@ static int riscv_iommu_platform_probe(struct platform_device *pdev)
 	fctl = riscv_iommu_readl(iommu, RISCV_IOMMU_REG_FCTL);
 	fctl |= RISCV_IOMMU_FCTL_WSI;
 	riscv_iommu_writel(iommu, RISCV_IOMMU_REG_FCTL, fctl);
+
+	/* Set simple 1:1 mapping for WSI vectors */
+	icvec = FIELD_PREP(RISCV_IOMMU_IVEC_CIV, RISCV_IOMMU_INTR_CQ) |
+		FIELD_PREP(RISCV_IOMMU_IVEC_FIV, RISCV_IOMMU_INTR_FQ);
+
+	if (iommu->cap & RISCV_IOMMU_CAP_HPM)
+		icvec |= FIELD_PREP(RISCV_IOMMU_IVEC_PMIV, RISCV_IOMMU_INTR_PM);
+
+	if (iommu->cap & RISCV_IOMMU_CAP_ATS)
+		icvec |= FIELD_PREP(RISCV_IOMMU_IVEC_PIV, RISCV_IOMMU_INTR_PQ);
+
+	riscv_iommu_writel(iommu, RISCV_IOMMU_REG_IVEC, icvec);
 
 	/* Parse Queue lengts */
 	ret = of_property_read_u32(pdev->dev.of_node, "cmdq_len", &iommu->cmdq_len);
