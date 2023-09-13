@@ -41,19 +41,19 @@ MODULE_ALIAS("riscv-iommu");
 MODULE_LICENSE("GPL v2");
 
 /* Global IOMMU params. */
-static int ddt_mode = RISCV_IOMMU_DDTP_MODE_3LVL;
+static int ddt_mode = RISCV_IOMMU_DDTP_MODE_1LVL;
 module_param(ddt_mode, int, 0644);
 MODULE_PARM_DESC(ddt_mode, "Device Directory Table mode.");
 
-static int cmdq_length = 1024;
+static int cmdq_length = 128;
 module_param(cmdq_length, int, 0644);
 MODULE_PARM_DESC(cmdq_length, "Command queue length.");
 
-static int fltq_length = 1024;
+static int fltq_length = 128;
 module_param(fltq_length, int, 0644);
 MODULE_PARM_DESC(fltq_length, "Fault queue length.");
 
-static int priq_length = 1024;
+static int priq_length = 128;
 module_param(priq_length, int, 0644);
 MODULE_PARM_DESC(priq_length, "Page request interface queue length.");
 
@@ -667,13 +667,19 @@ static void riscv_iommu_fault_report(struct riscv_iommu_device *iommu,
 				     struct riscv_iommu_fq_record *event)
 {
 	unsigned err, devid;
+	u64 iotval, iotval2;
 
 	err = FIELD_GET(RISCV_IOMMU_FQ_HDR_CAUSE, event->hdr);
 	devid = FIELD_GET(RISCV_IOMMU_FQ_HDR_DID, event->hdr);
-
-	dev_warn_ratelimited(iommu->dev,
-			     "Fault %d devid: %d" " iotval: %llx iotval2: %llx\n", err,
-			     devid, event->iotval, event->iotval2);
+	iotval = event->iotval;
+	iotval2 = event->iotval2;
+	
+	dev_warn_ratelimited(iommu->dev, "F: %d | DID: %d\n",
+						err, devid);
+	dev_warn_ratelimited(iommu->dev, "iotval: %llx\n",
+						iotval);
+	dev_warn_ratelimited(iommu->dev, "iotval2: %llx\n",
+						iotval2);
 }
 
 /* Fault/event queue primary interrupt handler */
@@ -1801,6 +1807,8 @@ static int riscv_iommu_map_pages(struct iommu_domain *iommu_domain,
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 
+	pr_info("Mapping IOVA %llx to SPA %llx\n", iova, phys);
+
 	if (!domain->pgtbl.ops.map_pages)
 		return -ENODEV;
 
@@ -1877,16 +1885,16 @@ static int riscv_iommu_enable(struct riscv_iommu_device *iommu, unsigned request
 		return -EBUSY;
 
 	/* Disallow state transtion from xLVL to xLVL. */
-	switch (FIELD_GET(RISCV_IOMMU_DDTP_MODE, ddtp)) {
-	case RISCV_IOMMU_DDTP_MODE_BARE:
-	case RISCV_IOMMU_DDTP_MODE_OFF:
-		break;
-	default:
-		if ((mode != RISCV_IOMMU_DDTP_MODE_BARE)
-		    && (mode != RISCV_IOMMU_DDTP_MODE_OFF))
-			return -EINVAL;
-		break;
-	}
+	// switch (FIELD_GET(RISCV_IOMMU_DDTP_MODE, ddtp)) {
+	// case RISCV_IOMMU_DDTP_MODE_BARE:
+	// case RISCV_IOMMU_DDTP_MODE_OFF:
+	// 	break;
+	// default:
+	// 	if ((mode != RISCV_IOMMU_DDTP_MODE_BARE)
+	// 	    && (mode != RISCV_IOMMU_DDTP_MODE_OFF))
+	// 		return -EINVAL;
+	// 	break;
+	// }
 
  retry:
 	switch (mode) {
@@ -2069,9 +2077,15 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 	 * set on the device tree.
 	 */
 	if (!iommu->cmdq_len)
-		iommu->cmdq_len = cmdq_length;
+	{
+		iommu->cmdq_len = cmdq_length;		
+		dev_info(dev, "CQ length: %d\n", cmdq_length);
+	}
 	if (!iommu->fltq_len)
+	{
 		iommu->fltq_len = fltq_length;
+		dev_info(dev, "FQ length: %d\n", fltq_length);
+	}
 	if (!iommu->priq_len)
 		iommu->priq_len = priq_length;
 	/* Clear any pending interrupt flag. */
@@ -2089,7 +2103,16 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 		goto fail;
 	if (!(iommu->cap & RISCV_IOMMU_CAP_ATS))
 		goto no_ats;
+
+	/**** ATS enabled: Start ****/
+
 	/* PRI functionally depends on ATS’s capabilities. */
+	if (!iommu->priq_len)
+	{
+		iommu->priq_len = priq_length;
+		dev_info(dev, "PQ length: %d\n", priq_length);
+	}
+
 	iommu->pq_work = iopf_queue_alloc(dev_name(dev));
 	if (!iommu->pq_work) {
 		dev_err(dev, "failed to allocate iopf queue\n");
@@ -2101,7 +2124,39 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 	if (ret)
 		goto fail;
 
+	/**** ATS enabled: End ****/
+
  no_ats:
+
+	// HPM
+	if (iommu->cap & RISCV_IOMMU_CAP_HPM) {
+		// Program HPM counters
+		// Cnt 0: Untranslated requests
+		riscv_iommu_writeq(iommu, RISCV_IOMMU_REG_IOHPMEVT(0), 
+							(RISCV_IOMMU_IOHPMEVT_EVENT_ID & RISCV_IOMMU_EVENT_UT_REQ) |
+							RISCV_IOMMU_IOHPMEVT_OF);
+		// Cnt 1: TLB Misses
+		riscv_iommu_writeq(iommu, RISCV_IOMMU_REG_IOHPMEVT(1), 
+							(RISCV_IOMMU_IOHPMEVT_EVENT_ID & RISCV_IOMMU_EVENT_TLB_MISS) |
+							RISCV_IOMMU_IOHPMEVT_OF);
+		// Cnt 2: DDT Walks
+		riscv_iommu_writeq(iommu, RISCV_IOMMU_REG_IOHPMEVT(2), 
+							(RISCV_IOMMU_IOHPMEVT_EVENT_ID & RISCV_IOMMU_EVENT_DDTW) |
+							RISCV_IOMMU_IOHPMEVT_OF);
+		// Cnt 3: S1 PT Walks
+		riscv_iommu_writeq(iommu, RISCV_IOMMU_REG_IOHPMEVT(3), 
+							(RISCV_IOMMU_IOHPMEVT_EVENT_ID & RISCV_IOMMU_EVENT_S1_PTW) |
+							RISCV_IOMMU_IOHPMEVT_OF);
+		// Cnt 4: S2 PT Walks
+		riscv_iommu_writeq(iommu, RISCV_IOMMU_REG_IOHPMEVT(4), 
+							(RISCV_IOMMU_IOHPMEVT_EVENT_ID & RISCV_IOMMU_EVENT_S2_PTW) |
+							RISCV_IOMMU_IOHPMEVT_OF);
+
+		// Enable counters (... 1111 1100 0001)
+		riscv_iommu_writel(iommu, RISCV_IOMMU_REG_IOCOUNTINH,
+							(u32)(~0x3EUL));
+	}
+
 	if (iommu_default_passthrough()) {
 		dev_info(dev, "iommu set to passthrough mode\n");
 		ret = riscv_iommu_enable(iommu, RISCV_IOMMU_DDTP_MODE_BARE);
