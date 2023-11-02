@@ -34,7 +34,20 @@ static int idma_n = 0;
 static int transfer_number = 0;
 static long long ktime_cnt = 0;
 
-#define CONSISTENT_MAPPING (1)
+/**
+ * 	Use DMA consistent mappings instead of streaming mappings.
+ * 	Streaming DMA mappings are created on every transfer. Thus, when using an IOMMU, internal caches 
+ * 		are flushed to invalidate all entries associated with the transfer.
+ * 	Consistent DMA mappings are created in the driver initialization, 
+ * 		and maintained during the lifetime of the driver.
+ * 		Internal IOMMU caches are not flushed unless explicitely requested.
+ */
+#define CONSISTENT_MAPPING 	(1)
+
+/**
+ *	Include code to count transfer times using interrupts
+ */
+#define ENABLE_IRQ			(0)
 
 // Source Address
 #define IDMA_SRC_ADDR_REG_OFFSET 0x0
@@ -116,11 +129,11 @@ static ssize_t idma_write(struct file *fp, const char __user *buf, size_t count,
 	struct page *page_wr[1];
 	struct idma_device *idma_dev = fp->private_data;
 
-	u64 src;			// base address of the user page where src data is
-	u64 dst;			// base address of the user page where data is to be placed
-	u64 cnt = count;	// number of bytes to be transferred
-	u64 conf = 0;		// iDMA configuration
-	u64 transfer_id;	// ID of the transfer
+	u64 src  = (u64)buf;					// base address of the user page where src data is
+	u64 dst  = (u64)(PAGE_ALIGN(src + 1));	// base address of the user page where data is to be placed
+	u64 cnt = count;						// number of bytes to be transferred
+	u64 conf = 0;							// iDMA configuration
+	u64 transfer_id;						// ID of the transfer
 
 	// Check whether the input address is aligned
 	if (offset_in_page(buf) != 0)
@@ -136,9 +149,6 @@ static ssize_t idma_write(struct file *fp, const char __user *buf, size_t count,
 	// Use streaming DMA mappings
 	if(!CONSISTENT_MAPPING)
 	{
-		src  = (u64)buf;					// base address of the user page where src data is
-		dst  = (u64)(PAGE_ALIGN(src + 1));	// base address of the user page where data is to be placed
-
 		// pin user memory page where the src data resides
 		ret = pin_user_pages_fast(src, 1, 0, page_ro);
 		if (ret != 1) {
@@ -178,23 +188,21 @@ static ssize_t idma_write(struct file *fp, const char __user *buf, size_t count,
 	{
 		// Copy user data to src address
 		copy_from_user(idma_dev->rd_vptr, (void*)buf, SZ_4K);
-		src  = (u64)idma_dev->rd_vptr;
-		dst  = (u64)idma_dev->wr_vptr;
 	}
 
 	// Configure iDMA
 	mutex_lock(&idma_dev->lock);
 	if (use_unmapped_addr)
 	{
-		// pr_info("Using src DMA Addr -> %llx\n", src);
-		// pr_info("Using dst DMA Addr -> %llx\n", dst);
+		pr_info("Using src DMA Addr -> %llx\n", src);
+		pr_info("Using dst DMA Addr -> %llx\n", dst);
 		writeq(src,  idma_dev->reg + IDMA_SRC_ADDR_REG_OFFSET);
 		writeq(dst,  idma_dev->reg + IDMA_DST_ADDR_REG_OFFSET);
 	}
 	else
 	{
-		// pr_info("Using src DMA Addr -> %llx\n", idma_dev->rd_dmaptr);
-		// pr_info("Using dst DMA Addr -> %llx\n", idma_dev->wr_dmaptr);
+		pr_info("Using src DMA Addr -> %llx\n", idma_dev->rd_dmaptr);
+		pr_info("Using dst DMA Addr -> %llx\n", idma_dev->wr_dmaptr);
 		writeq(idma_dev->rd_dmaptr,  idma_dev->reg + IDMA_SRC_ADDR_REG_OFFSET);
 		writeq(idma_dev->wr_dmaptr,  idma_dev->reg + IDMA_DST_ADDR_REG_OFFSET);
 	}
@@ -203,7 +211,9 @@ static ssize_t idma_write(struct file *fp, const char __user *buf, size_t count,
 	writeq(conf, 		idma_dev->reg + IDMA_CONF_REG_OFFSET);
 	
 	// Get transfer ID and trigger transfer
+	#if (ENABLE_IRQ == 1)
 	idma_dev->kt_st		= ktime_get();
+	#endif
 	transfer_id = readq(idma_dev->reg + IDMA_NEXT_ID_REG_OFFSET);
 	if (!transfer_id)
 	{
@@ -218,9 +228,11 @@ static ssize_t idma_write(struct file *fp, const char __user *buf, size_t count,
 	mutex_unlock(&idma_dev->lock);
 
 	// Calculate latency
+	#if (ENABLE_IRQ == 1)
 	transfer_number++;
 	ktime_cnt += (long long)ktime_to_ns(ktime_sub(idma_dev->kt_wr, idma_dev->kt_st));
 	pr_info("Time avg: %lld ns\n\n", ktime_cnt/transfer_number);
+	#endif
 
 	if (!CONSISTENT_MAPPING)
 	{
@@ -235,6 +247,8 @@ static ssize_t idma_write(struct file *fp, const char __user *buf, size_t count,
 	{
 		// Copy back data to user page
 		copy_to_user((void*)PAGE_ALIGN((u64)buf + 1), idma_dev->wr_vptr, SZ_4K);
+		// Clear destination buffer
+		memset(idma_dev->wr_vptr, 0, SZ_4K);
 	}
 
 	return 0;
@@ -261,7 +275,6 @@ static ssize_t idma_read(struct file *fp, char __user *buf, size_t count, loff_t
 	struct page *page_ro[1];
 	struct page *page_wr[1];
 	struct idma_device *idma_dev = fp->private_data;
-	dma_addr_t src_handle, dst_handle;
 
 	u64 dst  = (u64)buf;					// base address of the user page where data is to be placed
 	u64 src  = (u64)(PAGE_ALIGN(dst + 1));	// base address of the user page where src data is
@@ -269,7 +282,7 @@ static ssize_t idma_read(struct file *fp, char __user *buf, size_t count, loff_t
 	u64 conf = 0;							// iDMA configuration
 	u64 transfer_id;
 
-	// Aligned addresses only
+	// Check whether the input address is aligned
 	if (offset_in_page(buf) != 0)
 	{
 		pr_err("Source buffer is not aligned!\n");
@@ -280,45 +293,74 @@ static ssize_t idma_read(struct file *fp, char __user *buf, size_t count, loff_t
 	if (cnt > 4096)
 		return -EINVAL;
 
-	// pin user memory page where the src data resides
-	ret = pin_user_pages_fast(src, 1, 0, page_ro);
-	if (ret != 1) {
-		pr_err("Failure locking RO pages.\n");
-		return -ENOMEM;
+	// Use streaming DMA mappings
+	if(!CONSISTENT_MAPPING)
+	{
+		// pin user memory page where the src data resides
+		ret = pin_user_pages_fast(src, 1, 0, page_ro);
+		if (ret != 1) {
+			pr_err("Failure locking RO pages.\n");
+			return -ENOMEM;
+		}
+		// pin user memory page where data will be written
+		ret = pin_user_pages_fast(dst, 1, FOLL_WRITE, page_wr);
+		if (ret != 1) {
+			pr_err("Failure locking WR pages.\n");
+			return -ENOMEM;
+		}
+
+		// Configure PTs in the IOMMU (streaming mappings)
+		// Read address
+		idma_dev->rd_dmaptr = dma_map_page(idma_dev->miscdev.parent, page_ro[0],
+					offset_in_page(src), cnt, DMA_TO_DEVICE);
+		ret = dma_mapping_error(idma_dev->miscdev.parent, idma_dev->rd_dmaptr);
+
+		if (ret) {
+			pr_err("Failure mapping src page.\n");
+			return -ENOMEM;
+		}
+
+		// Write address
+		idma_dev->wr_dmaptr = dma_map_page(idma_dev->miscdev.parent, page_wr[0],
+					offset_in_page(dst), cnt, DMA_FROM_DEVICE);
+		ret = dma_mapping_error(idma_dev->miscdev.parent, idma_dev->wr_dmaptr);
+		if (ret) {
+			pr_err("Failure mapping dest page.\n");
+			return -ENOMEM;
+		}
 	}
-	// pin user memory page where data will be written
-	ret = pin_user_pages_fast(dst, 1, FOLL_WRITE, page_wr);
-	if (ret != 1) {
-		pr_err("Failure locking WR pages.\n");
-		return -ENOMEM;
+	
+	// Use consistent DMA mappings
+	else
+	{
+		// Copy user data to src address
+		copy_from_user(idma_dev->rd_vptr, (void*)buf, SZ_4K);
 	}
 
-	// Configure PTs in the IOMMU
-	// Read address
-	src_handle = dma_map_page(idma_dev->miscdev.parent, page_ro[0],
-				offset_in_page(src), cnt, DMA_TO_DEVICE);
-	ret = dma_mapping_error(idma_dev->miscdev.parent, src_handle);
-	if (ret) {
-		pr_err("Failure mapping pages.\n");
-		return -ENOMEM;
-	}
-
-	// Write address
-	dst_handle = dma_map_page(idma_dev->miscdev.parent, page_wr[0],
-				offset_in_page(dst), cnt, DMA_FROM_DEVICE);
-	ret = dma_mapping_error(idma_dev->miscdev.parent, dst_handle);
-	if (ret) {
-		pr_err("Failure mapping pages.\n");
-		return -ENOMEM;
-	}
-
+	// Configure iDMA
 	mutex_lock(&idma_dev->lock);
-	writeq(src_handle,  idma_dev->reg + IDMA_SRC_ADDR_REG_OFFSET);
-	writeq(dst_handle,  idma_dev->reg + IDMA_DST_ADDR_REG_OFFSET);
+	if (use_unmapped_addr)
+	{
+		pr_info("Using src DMA Addr -> %llx\n", src);
+		pr_info("Using dst DMA Addr -> %llx\n", dst);
+		writeq(src,  idma_dev->reg + IDMA_SRC_ADDR_REG_OFFSET);
+		writeq(dst,  idma_dev->reg + IDMA_DST_ADDR_REG_OFFSET);
+	}
+	else
+	{
+		pr_info("Using src DMA Addr -> %llx\n", idma_dev->rd_dmaptr);
+		pr_info("Using dst DMA Addr -> %llx\n", idma_dev->wr_dmaptr);
+		writeq(idma_dev->rd_dmaptr,  idma_dev->reg + IDMA_SRC_ADDR_REG_OFFSET);
+		writeq(idma_dev->wr_dmaptr,  idma_dev->reg + IDMA_DST_ADDR_REG_OFFSET);
+	}
+
 	writeq(cnt,  		idma_dev->reg + IDMA_NUM_BYTES_REG_OFFSET);
 	writeq(conf, 		idma_dev->reg + IDMA_CONF_REG_OFFSET);
 	
 	// Get transfer ID and trigger transfer
+	#if (ENABLE_IRQ == 1)
+	idma_dev->kt_st		= ktime_get();
+	#endif
 	transfer_id = readq(idma_dev->reg + IDMA_NEXT_ID_REG_OFFSET);
 	if (!transfer_id)
 	{
@@ -326,19 +368,35 @@ static ssize_t idma_read(struct file *fp, char __user *buf, size_t count, loff_t
 		return -EINVAL;
 	}
 
-	pr_info("iDMA transfer ID: %llu\n", transfer_id);
-
 	// Wait for transfer to be done
 	do {
 		cpu_relax();
 	} while (readq(idma_dev->reg + IDMA_DONE_REG_OFFSET) != transfer_id);
 	mutex_unlock(&idma_dev->lock);
 
-	// Unmap pages
-	dma_unmap_page(idma_dev->miscdev.parent, src_handle, cnt, DMA_TO_DEVICE);
-	dma_unmap_page(idma_dev->miscdev.parent, dst_handle, cnt, DMA_FROM_DEVICE);
-	unpin_user_pages_dirty_lock(page_ro, 1, false);
-	unpin_user_pages_dirty_lock(page_wr, 1, true);
+	// Calculate latency
+	#if (ENABLE_IRQ == 1)
+	transfer_number++;
+	ktime_cnt += (long long)ktime_to_ns(ktime_sub(idma_dev->kt_wr, idma_dev->kt_st));
+	pr_info("Time avg: %lld ns\n\n", ktime_cnt/transfer_number);
+	#endif
+
+	if (!CONSISTENT_MAPPING)
+	{
+		// Unmap pages
+		dma_unmap_page(idma_dev->miscdev.parent, idma_dev->rd_dmaptr, cnt, DMA_TO_DEVICE);
+		dma_unmap_page(idma_dev->miscdev.parent, idma_dev->wr_dmaptr, cnt, DMA_FROM_DEVICE);
+		unpin_user_pages_dirty_lock(page_ro, 1, false);
+		unpin_user_pages_dirty_lock(page_wr, 1, true);
+	}
+
+	else
+	{
+		// Copy back data to user page
+		copy_to_user((void*)PAGE_ALIGN((u64)buf + 1), idma_dev->wr_vptr, SZ_4K);
+		// Clear destination buffer
+		memset(idma_dev->wr_vptr, 0, SZ_4K);
+	}
 
 	return 0;
 }
@@ -350,6 +408,8 @@ static const struct file_operations idma_fops = {
 	.read		= idma_read,
 	.write		= idma_write,
 };
+
+#if (ENABLE_IRQ == 1)
 
 static irqreturn_t idma_rd_irq_check(int irq, void *data)
 {
@@ -402,6 +462,8 @@ static irqreturn_t idma_wr_process(int irq, void *data)
 
 	return IRQ_HANDLED;
 }
+
+#endif
 
 static int idma_probe(struct platform_device *pdev)
 {
@@ -456,6 +518,8 @@ static int idma_probe(struct platform_device *pdev)
 	// We need to save the idma_dev ptr somewhere
 	dev_set_drvdata(&pdev->dev, idma_dev);
 
+	#if (ENABLE_IRQ == 1)
+
 	/* Parse IRQ assignment */
 	// RD
 	// irq = platform_get_irq_byname_optional(pdev, "rd");
@@ -491,6 +555,8 @@ static int idma_probe(struct platform_device *pdev)
 		dev_err(dev, "no IRQ provided for the write completions\n");
 		goto fail;
 	}
+
+	#endif
 
 	if (CONSISTENT_MAPPING)
 	{
