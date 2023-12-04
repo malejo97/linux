@@ -47,12 +47,12 @@ static u64 ktime_cnt = 0;
 /**
  * 	Number of mappings (PTs) per device
  */
-#define N_MAPPINGS			(32)
+#define N_MAPPINGS			(1)
 
 /**
  *	Include code to measure transfer times using iDMA interrupts
  */
-#define ENABLE_IRQ			(1)
+#define ENABLE_IRQ			(0)
 
 // Source Address
 #define IDMA_SRC_ADDR_REG_OFFSET 0x0
@@ -214,8 +214,8 @@ static ssize_t idma_write(struct file *fp, const char __user *buf, size_t count,
 	}
 	else
 	{
-		// pr_info("Using src DMA Addr -> %llx\n", idma_dev->rd_dmaptr[idx_r]);
-		// pr_info("Using dst DMA Addr -> %llx\n", idma_dev->wr_dmaptr[idx_w]);
+		pr_info("Using src DMA Addr -> %llx\n", idma_dev->rd_dmaptr[idx_r]);
+		pr_info("Using dst DMA Addr -> %llx\n", idma_dev->wr_dmaptr[idx_w]);
 		writeq(idma_dev->rd_dmaptr[idx_r],  idma_dev->reg + IDMA_SRC_ADDR_REG_OFFSET);
 		writeq(idma_dev->wr_dmaptr[idx_w],  idma_dev->reg + IDMA_DST_ADDR_REG_OFFSET);
 	}
@@ -644,7 +644,7 @@ MODULE_DEVICE_TABLE(of, idma_of_match);
 
 static struct platform_driver idma_driver = {
 	.driver	= {
-		.name			= "il_manolo,idma",
+		.name			= "zdl,idma",
 		.of_match_table		= idma_of_match,
 		.suppress_bind_attrs	= true,
 	},
