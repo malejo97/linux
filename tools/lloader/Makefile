@@ -18,7 +18,7 @@ endif
 all: $(TARGET).bin
 
 clean:
-	-rm *.elf *.bin
+	-rm -f *.elf *.bin
 
 .PHONY: all clean
 	
