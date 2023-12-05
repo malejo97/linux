@@ -100,15 +100,20 @@ struct idma_device {
 
 static int idma_open(struct inode *inode, struct file *fp)
 {
+	#if (ENABLE_IRQ == 1)
 	transfer_number = 0;
 	ktime_cnt = 0;
+	#endif
 
 	return 0;
 }
 
 static int idma_release(struct inode *inode, struct file *fp)
 {
+	#if (ENABLE_IRQ == 1)
 	pr_info("Time avg: %llu ns\n\n", ktime_cnt/transfer_number);
+	#endif
+	
 	return 0;
 }
 
