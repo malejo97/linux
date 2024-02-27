@@ -1746,18 +1746,19 @@ static void riscv_iommu_flush_iotlb_range(struct iommu_domain *iommu_domain,
 		riscv_iommu_cmd_inval_set_gscid(&cmd, domain->id);
 	} else {
 		riscv_iommu_cmd_inval_vma(&cmd);
-		riscv_iommu_cmd_inval_set_pscid(&cmd, domain->id);
+		// riscv_iommu_cmd_inval_set_pscid(&cmd, domain->id);
 	}
 
-	if (start && end && pgsize) {
-		/* Cover only the range that is needed */
-		for (iova = *start; iova <= *end; iova += *pgsize) {
-			riscv_iommu_cmd_inval_set_addr(&cmd, iova);
-			riscv_iommu_post(domain->iommu, &cmd);
-		}
-	} else {
+	// if (start && end && pgsize) {
+	// 	/* Cover only the range that is needed */
+	// 	for (iova = *start; iova <= *end; iova += *pgsize) {
+	// 		printk("Sending IOTINVAL with ADDR");
+	// 		riscv_iommu_cmd_inval_set_addr(&cmd, iova);
+	// 		riscv_iommu_post(domain->iommu, &cmd);
+	// 	}
+	// } else {
 		riscv_iommu_post(domain->iommu, &cmd);
-	}
+	// }
 	riscv_iommu_iofence_sync(domain->iommu);
 
 	/* ATS invalidation for every device and for every translation */
@@ -1807,7 +1808,7 @@ static int riscv_iommu_map_pages(struct iommu_domain *iommu_domain,
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 
-	pr_info("Mapping IOVA %llx to SPA %llx\n", iova, phys);
+	pr_info("Mapping IOVA %llx to SPA %llx\n", (unsigned long long)iova, phys);
 
 	if (!domain->pgtbl.ops.map_pages)
 		return -ENODEV;

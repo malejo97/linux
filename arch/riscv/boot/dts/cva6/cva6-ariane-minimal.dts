@@ -132,19 +132,19 @@
     riscv_iommu: iommu@50010000 {
       compatible = "riscv,iommu";
       reg = <0x0 0x50010000 0x0 0x00001000>;
-      interrupts = <9 10 11>;
+      interrupts = <8 9 10>;
       interrupt-names = "cmdq", "fltq", "hpm";
       interrupt-parent = <&PLIC0>;
       #iommu-cells = <1>;
     };
 
     idma0: master@50000000{
-      compatible = "pulp,idma";
+      compatible = "zdl,idma";
       reg = <0x0 0x50000000 0x0 0x00001000>;
-      interrupts = <8>;
-      interrupt-names = "wr";
-      interrupt-parent = <&PLIC0>;
-      iommus = <&riscv_iommu 1>;
+      // interrupts = <8>;
+      // interrupt-names = "wr";
+      // interrupt-parent = <&PLIC0>;
+      iommus = <&riscv_iommu 10>;
     };
   };
 };
