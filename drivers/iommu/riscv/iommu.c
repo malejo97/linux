@@ -1726,7 +1726,7 @@ static void riscv_iommu_flush_iotlb_range(struct iommu_domain *iommu_domain,
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 	struct riscv_iommu_command cmd;
 	struct riscv_iommu_endpoint *endpoint;
-	unsigned long iova;
+	// unsigned long iova;
 	unsigned long payload;
 
 	if (domain->mode == RISCV_IOMMU_DC_FSC_MODE_BARE)

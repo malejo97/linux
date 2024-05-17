@@ -92,8 +92,8 @@ struct idma_device {
 	struct miscdevice miscdev;
 	void __iomem *reg;
 	#if(CONSISTENT_MAPPING)
-		void *rd_vptr[N_MAPPINGS], *wr_vptr[N_MAPPINGS];
-		dma_addr_t rd_dmaptr[N_MAPPINGS], wr_dmaptr[N_MAPPINGS];
+	void *rd_vptr[N_MAPPINGS], *wr_vptr[N_MAPPINGS];
+	dma_addr_t rd_dmaptr[N_MAPPINGS], wr_dmaptr[N_MAPPINGS];
 	#endif
 	struct mutex lock;
 	refcount_t ref;
@@ -144,13 +144,13 @@ static ssize_t idma_write(struct file *fp, const char __user *buf, size_t count,
 	struct idma_device *idma_dev = fp->private_data;
 
 	#if(!CONSISTENT_MAPPING)
-		struct page *page_rd[1];
-		struct page *page_wr[1];
-		u64 src  = 0;
-		u64 dst  = 0;
+	struct page *page_rd[1];
+	struct page *page_wr[1];
+	u64 src  = 0;
+	u64 dst  = 0;
 	#else
-		u64 rand_r = 0, idx_r = 0;
-		u64 rand_w = 0, idx_w = 0;
+	u64 rand_r = 0, idx_r = 0;
+	u64 rand_w = 0, idx_w = 0;
 	#endif
 
 	u64 src_vaddr = (u64)buf;
@@ -172,11 +172,11 @@ static ssize_t idma_write(struct file *fp, const char __user *buf, size_t count,
 		return -EINVAL;
 
 	#if(CONSISTENT_MAPPING)
-		// Generate random index
-		get_random_bytes(&rand_r, sizeof(rand_r));
-		idx_r = rand_r % N_MAPPINGS;
-		get_random_bytes(&rand_w, sizeof(rand_w));
-		idx_w = rand_w % N_MAPPINGS;
+	// Generate random index
+	get_random_bytes(&rand_r, sizeof(rand_r));
+	idx_r = rand_r % N_MAPPINGS;
+	get_random_bytes(&rand_w, sizeof(rand_w));
+	idx_w = rand_w % N_MAPPINGS;
 	#endif
 
 	#if(!CONSISTENT_MAPPING)
@@ -220,7 +220,12 @@ static ssize_t idma_write(struct file *fp, const char __user *buf, size_t count,
 		// Use consistent DMA mappings
 
 		// Copy user data to src address
-		ret = copy_from_user(idma_dev->rd_vptr[idx_r], (void*)buf, SZ_4K);
+		mutex_lock(&idma_dev->lock);
+		ret = copy_from_user(idma_dev->rd_vptr[idx_r], (void*)buf, cnt);
+		mutex_unlock(&idma_dev->lock);
+
+		if (ret != 0)
+			return -1;
 	}
 	#endif
 
@@ -287,9 +292,15 @@ static ssize_t idma_write(struct file *fp, const char __user *buf, size_t count,
 	#else
 	{
 		// Copy back data to user page
-		ret = copy_to_user((void*)PAGE_ALIGN((u64)buf + 1), idma_dev->wr_vptr[idx_w], SZ_4K);
-		// Clear destination buffer
-		memset(idma_dev->wr_vptr[idx_w], 0, SZ_4K);
+		mutex_lock(&idma_dev->lock);
+		ret = copy_to_user((void*)PAGE_ALIGN((u64)buf + 1), idma_dev->wr_vptr[idx_w], cnt);
+		mutex_unlock(&idma_dev->lock);
+		if (ret != 0)
+			return -1;
+
+		// Clear src and dst buffer
+		memset(idma_dev->rd_vptr[idx_r], 0, cnt);
+		memset(idma_dev->wr_vptr[idx_w], 0, cnt);
 	}
 	#endif
 
@@ -345,11 +356,11 @@ static ssize_t idma_read(struct file *fp, char __user *buf, size_t count, loff_t
 		return -EINVAL;
 
 	#if(CONSISTENT_MAPPING)
-		// Generate random index
-		get_random_bytes(&rand_r, sizeof(rand_r));
-		idx_r = rand_r % N_MAPPINGS;
-		get_random_bytes(&rand_w, sizeof(rand_w));
-		idx_w = rand_w % N_MAPPINGS;
+	// Generate random index
+	get_random_bytes(&rand_r, sizeof(rand_r));
+	idx_r = rand_r % N_MAPPINGS;
+	get_random_bytes(&rand_w, sizeof(rand_w));
+	idx_w = rand_w % N_MAPPINGS;
 	#endif
 
 	#if(!CONSISTENT_MAPPING)
@@ -393,7 +404,7 @@ static ssize_t idma_read(struct file *fp, char __user *buf, size_t count, loff_t
 		// Use consistent DMA mappings
 
 		// Copy user data to src address
-		ret = copy_from_user(idma_dev->rd_vptr[idx_r], (void*)buf, SZ_4K);
+		ret = copy_from_user(idma_dev->rd_vptr[idx_r], (void*)buf, cnt);
 	}
 	#endif
 
@@ -460,9 +471,10 @@ static ssize_t idma_read(struct file *fp, char __user *buf, size_t count, loff_t
 	#else
 	{
 		// Copy back data to user page
-		ret = copy_to_user((void*)PAGE_ALIGN((u64)buf + 1), idma_dev->wr_vptr[idx_w], SZ_4K);
-		// Clear destination buffer
-		memset(idma_dev->wr_vptr[idx_w], 0, SZ_4K);
+		ret = copy_to_user((void*)PAGE_ALIGN((u64)buf + 1), idma_dev->wr_vptr[idx_w], cnt);
+		// Clear src and dst buffer
+		memset(idma_dev->rd_vptr[idx_r], 0, cnt);
+		memset(idma_dev->wr_vptr[idx_w], 0, cnt);
 	}
 	#endif
 
@@ -627,18 +639,6 @@ static int idma_probe(struct platform_device *pdev)
 	}
 
 	#endif
-
-	// static inline void *dma_alloc_noncoherent(struct device *dev, size_t size,
-	// 	dma_addr_t *dma_handle, enum dma_data_direction dir, gfp_t gfp);
-
-	// static inline void *dma_alloc_coherent(struct device *dev, size_t size,
-	// 	dma_addr_t *dma_handle, gfp_t gfp)
-
-	// static inline void dma_free_noncoherent(struct device *dev, size_t size,
-	// 	void *vaddr, dma_addr_t dma_handle, enum dma_data_direction dir)
-
-	// static inline void dma_free_coherent(struct device *dev, size_t size,
-	// 	void *cpu_addr, dma_addr_t dma_handle)
 
 	#if(CONSISTENT_MAPPING)
 	{
