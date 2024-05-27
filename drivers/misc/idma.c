@@ -222,6 +222,7 @@ static ssize_t idma_write(struct file *fp, const char __user *buf, size_t count,
 		// Copy user data to src address
 		mutex_lock(&idma_dev->lock);
 		ret = copy_from_user(idma_dev->rd_vptr[idx_r], (void*)buf, cnt);
+		local_flush_icache_all();
 		mutex_unlock(&idma_dev->lock);
 
 		if (ret != 0)
@@ -281,6 +282,8 @@ static ssize_t idma_write(struct file *fp, const char __user *buf, size_t count,
 	// pr_info("Time avg: %llu ns\n\n", ktime_cnt/transfer_number);
 	#endif
 
+	local_flush_icache_all();
+
 	#if(!CONSISTENT_MAPPING)
 	{
 		// Unmap pages
@@ -294,6 +297,7 @@ static ssize_t idma_write(struct file *fp, const char __user *buf, size_t count,
 		// Copy back data to user page
 		mutex_lock(&idma_dev->lock);
 		ret = copy_to_user((void*)PAGE_ALIGN((u64)buf + 1), idma_dev->wr_vptr[idx_w], cnt);
+		local_flush_icache_all();
 		mutex_unlock(&idma_dev->lock);
 		if (ret != 0)
 			return -1;
@@ -404,7 +408,10 @@ static ssize_t idma_read(struct file *fp, char __user *buf, size_t count, loff_t
 		// Use consistent DMA mappings
 
 		// Copy user data to src address
+		mutex_lock(&idma_dev->lock);
 		ret = copy_from_user(idma_dev->rd_vptr[idx_r], (void*)buf, cnt);
+		local_flush_icache_all();
+		mutex_unlock(&idma_dev->lock);
 	}
 	#endif
 
@@ -471,7 +478,13 @@ static ssize_t idma_read(struct file *fp, char __user *buf, size_t count, loff_t
 	#else
 	{
 		// Copy back data to user page
+		mutex_lock(&idma_dev->lock);
 		ret = copy_to_user((void*)PAGE_ALIGN((u64)buf + 1), idma_dev->wr_vptr[idx_w], cnt);
+		local_flush_icache_all();
+		mutex_unlock(&idma_dev->lock);
+		if (ret != 0)
+			return -1;
+
 		// Clear src and dst buffer
 		memset(idma_dev->rd_vptr[idx_r], 0, cnt);
 		memset(idma_dev->wr_vptr[idx_w], 0, cnt);
@@ -603,21 +616,6 @@ static int idma_probe(struct platform_device *pdev)
 	#if (ENABLE_IRQ == 1)
 
 	/* Parse IRQ assignment */
-	// RD
-	// irq = platform_get_irq_byname_optional(pdev, "rd");
-	// if (irq > 0)
-	// 	dev_info(dev, "Read completion IRQ: %d\n", irq);
-
-	// else {
-	// 	dev_err(dev, "no IRQ provided for read completions\n");
-	// 	goto fail;
-	// }
-
-	// if (request_threaded_irq(irq, idma_rd_irq_check, idma_rd_process, IRQF_ONESHOT | IRQF_SHARED,
-	// 			 dev_name(dev), idma_dev)) {
-	// 	dev_err(dev, "fail to request irq %d for iDMA read completion\n", irq);
-	// 	goto fail;
-	// }
 
 	// WR
 	irq = platform_get_irq_byname_optional(pdev, "wr");
