@@ -198,11 +198,11 @@ enum riscv_iommu_ddtp_modes {
 
 /* 5.22 Performance monitoring event counters (31 * 64bits) */
 #define RISCV_IOMMU_REG_IOHPMCTR_BASE	0x0068
-#define RISCV_IOMMU_REG_IOHPMCTR(_n)	(RISCV_IOMMU_REG_IOHPMCTR_BASE + (_n * 0x8))
+#define RISCV_IOMMU_REG_IOHPMCTR(_n)	(RISCV_IOMMU_REG_IOHPMCTR_BASE + ((_n) * 0x8))
 
 /* 5.23 Performance monitoring event selectors (31 * 64bits) */
 #define RISCV_IOMMU_REG_IOHPMEVT_BASE	0x0160
-#define RISCV_IOMMU_REG_IOHPMEVT(_n)	(RISCV_IOMMU_REG_IOHPMEVT_BASE + (_n * 0x8))
+#define RISCV_IOMMU_REG_IOHPMEVT(_n)	(RISCV_IOMMU_REG_IOHPMEVT_BASE + ((_n) * 0x8))
 #define RISCV_IOMMU_IOHPMEVT_EVENT_ID	GENMASK(14, 0)
 #define RISCV_IOMMU_IOHPMEVT_DMASK	BIT_ULL(15)
 #define RISCV_IOMMU_IOHPMEVT_PID_PSCID	GENMASK(35, 16)
