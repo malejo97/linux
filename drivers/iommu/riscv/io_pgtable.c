@@ -106,7 +106,7 @@ static pte_t *riscv_iommu_pt_walk_alloc(pmd_t * ptp, unsigned long iova,
 
 static pte_t *riscv_iommu_pt_walk_fetch(pmd_t * ptp,
 					unsigned long iova, unsigned shift,
-					bool root)
+					bool root, unsigned int *leaf_shift)
 {
 	pmd_t *pte;
 
@@ -116,14 +116,16 @@ static pte_t *riscv_iommu_pt_walk_fetch(pmd_t * ptp,
 		pte = (pmd_t *) pfn_to_virt(__page_val_to_pfn(pmd_val(*ptp))) +
 		    ((iova >> shift) & (PTRS_PER_PMD - 1));
 
-	if (pmd_leaf(*pte))
+	if (pmd_leaf(*pte)) {
+		if (leaf_shift)
+			*leaf_shift = shift;
 		return (pte_t *) pte;
-	else if (pmd_none(*pte))
+	} else if (pmd_none(*pte))
 		return NULL;
 	else if (shift == PAGE_SHIFT)
 		return NULL;
 
-	return riscv_iommu_pt_walk_fetch(pte, iova, shift - 9, false);
+	return riscv_iommu_pt_walk_fetch(pte, iova, shift - 9, false, leaf_shift);
 }
 
 static int riscv_iommu_map_pages(struct io_pgtable_ops *ops,
@@ -188,7 +190,7 @@ static size_t riscv_iommu_unmap_pages(struct io_pgtable_ops *ops,
 
 	while (pgcount--) {
 		pte = riscv_iommu_pt_walk_fetch((pmd_t *) domain->pgd_root,
-						iova, PGDIR_SHIFT, true);
+						iova, PGDIR_SHIFT, true, NULL);
 		if (!pte)
 			return size;
 
@@ -208,17 +210,19 @@ static phys_addr_t riscv_iommu_iova_to_phys(struct io_pgtable_ops *ops,
 					    unsigned long iova)
 {
 	struct riscv_iommu_domain *domain = io_pgtable_ops_to_domain(ops);
+	unsigned int leaf_shift;
 	pte_t *pte;
 
 	if (domain->domain.type == IOMMU_DOMAIN_IDENTITY)
 		return (phys_addr_t) iova;
 
 	pte = riscv_iommu_pt_walk_fetch((pmd_t *) domain->pgd_root,
-					iova, PGDIR_SHIFT, true);
+					iova, PGDIR_SHIFT, true, &leaf_shift);
 	if (!pte || !pte_present(*pte))
 		return 0;
 
-	return (pfn_to_phys(pte_pfn(*pte)) | (iova & PAGE_MASK));
+	/* Add the offset within the actual leaf (4 KiB, 2 MiB or 1 GiB). */
+	return pfn_to_phys(pte_pfn(*pte)) | (iova & ((1UL << leaf_shift) - 1));
 }
 
 static void riscv_iommu_tlb_inv_all(void *cookie)
